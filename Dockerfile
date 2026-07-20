@@ -1,35 +1,31 @@
-# ========== 只构建前端静态资源 ==========
-FROM node:22-alpine AS frontend-build
-WORKDIR /work
-# 只复制前端目录
-COPY frontend ./frontend
-WORKDIR /work/frontend
+# 统一编译环境
+FROM node:22-alpine AS builder
+
+# 预装go环境
+RUN apk add --no-cache go git
+
+WORKDIR /build
+# 直接拉取完整官方源码，彻底脱离你本地/fork仓库文件缺失问题
+RUN git clone https://github.com/chenyme/grok2api.git .
+
+# 编译前端
+WORKDIR /build/frontend
 RUN npm install -g pnpm@9
 RUN pnpm install
 RUN pnpm run build
 
-# ========== 单独构建后端 Go 程序 ==========
-FROM golang:1.22-alpine AS backend-build
-WORKDIR /work
-# 只复制后端核心文件
-COPY go.mod ./
-COPY cmd ./cmd
-COPY internal ./internal
-COPY pkg ./pkg
-COPY config ./config
-# 下载依赖编译
+# 编译后端
+WORKDIR /build
 RUN go env -w GOPROXY=https://goproxy.cn,direct
 RUN go mod tidy
 RUN CGO_ENABLED=0 GOOS=linux go build -o grok2api ./cmd/main.go
 
-# ========== 最终运行镜像 ==========
+# 运行镜像
 FROM alpine:3.19
 WORKDIR /app
 RUN apk add --no-cache ca-certificates tzdata
-# 拷贝编译好的后端程序
-COPY --from=backend-build /work/grok2api ./
-# 拷贝编译好的前端静态页面
-COPY --from=frontend-build /work/frontend/dist ./frontend/dist
+COPY --from=builder /build/grok2api /app/
+COPY --from=builder /build/frontend/dist /app/frontend/dist
 
 EXPOSE 8000
 CMD ["/app/grok2api"]
