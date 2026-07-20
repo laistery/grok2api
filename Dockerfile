@@ -1,71 +1,44 @@
-ARG NODE_VERSION=22
-ARG GO_VERSION=1.26
-ARG ALPINE_VERSION=3.23
-
-FROM --platform=$BUILDPLATFORM node:${NODE_VERSION}-alpine AS frontend-builder
-
+# 前端构建阶段
+FROM node:20-alpine AS frontend-builder
 WORKDIR /src/frontend
-RUN corepack enable
 
-COPY frontend/package.json frontend/pnpm-lock.yaml ./
-RUN --mount=type=cache,id=grok2api-pnpm,target=/pnpm/store \
-    pnpm config set store-dir /pnpm/store && \
-    pnpm fetch --frozen-lockfile
+# 修复缓存id格式，加cacheKey前缀
+RUN --mount=type=cache,id=cacheKey-grok2api-pnpm,target=/pnpm/store \
+    corepack enable pnpm && corepack use pnpm@latest
 
-RUN --mount=type=cache,id=grok2api-pnpm,target=/pnpm/store \
-    pnpm config set store-dir /pnpm/store && \
-    pnpm install --offline --frozen-lockfile
+COPY frontend/package*.json ./
+RUN --mount=type=cache,id=cacheKey-grok2api-pnpm,target=/pnpm/store \
+    pnpm install --frozen-lockfile
 
-COPY frontend/index.html frontend/vite.config.ts frontend/tsconfig.json frontend/tsconfig.app.json frontend/tsconfig.node.json ./
-COPY frontend/public ./public
-COPY frontend/src ./src
-RUN --mount=type=cache,id=grok2api-tsc,target=/src/frontend/.cache,sharing=locked \
-    pnpm build
+COPY frontend/ .
+RUN --mount=type=cache,id=cacheKey-grok2api-tsc,target=/src/frontend/.cache,sharing=locked \
+    pnpm run build
 
+# Go后端编译阶段
+FROM golang:1.22-alpine AS backend-builder
+WORKDIR /src
 
-FROM --platform=$BUILDPLATFORM golang:${GO_VERSION}-alpine AS backend-builder
+ENV CGO_ENABLED=0
+ENV GOOS=linux
 
-ARG TARGETOS
-ARG TARGETARCH
+# 修复go mod缓存格式
+RUN --mount=type=cache,id=cacheKey-grok2api-go-mod,target=/go/pkg/mod,sharing=locked
 
-WORKDIR /src/backend
-RUN apk add --no-cache ca-certificates git
-
-COPY backend/go.mod backend/go.sum ./
-RUN --mount=type=cache,id=grok2api-go-mod,target=/go/pkg/mod,sharing=locked \
+COPY go.mod go.sum ./
+RUN --mount=type=cache,id=cacheKey-grok2api-go-mod,target=/go/pkg/mod,sharing=locked \
     go mod download
 
-COPY backend/cmd ./cmd
-COPY backend/internal ./internal
-COPY backend/docs/docs.go ./docs/docs.go
-RUN --mount=type=cache,id=grok2api-go-mod,target=/go/pkg/mod,sharing=locked \
-    --mount=type=cache,id=grok2api-go-build,target=/root/.cache/go-build,sharing=locked \
-    CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
-    go build -buildvcs=false -trimpath -ldflags="-s -w" -o /out/grok2api ./cmd/grok2api
+COPY . .
+COPY --from=frontend-builder /src/frontend/dist ./frontend/dist
 
+RUN go build -o grok2api ./cmd/main.go
 
-FROM alpine:${ALPINE_VERSION}
-
-ENV TZ=Asia/Shanghai \
-    GROK2API_CONFIG_SOURCE=/run/grok2api/config.yaml
-
-RUN apk add --no-cache ca-certificates su-exec tzdata && \
-    addgroup -S -g 10001 grok2api && \
-    adduser -S -D -H -u 10001 -G grok2api grok2api && \
-    mkdir -p /app/data /run/grok2api && \
-    chown -R grok2api:grok2api /app/data /run/grok2api
-
+# 最终运行镜像
+FROM alpine:3.19
 WORKDIR /app
 
-COPY --from=backend-builder --chmod=0755 /out/grok2api /app/grok2api
-COPY --from=frontend-builder /src/frontend/dist /app/frontend/dist
-COPY VERSION /app/VERSION
-COPY --chmod=0755 docker/entrypoint.sh /usr/local/bin/grok2api-entrypoint
+RUN apk add --no-cache ca-certificates tzdata
+COPY --from=backend-builder /src/grok2api /app/grok2api
 
 EXPOSE 8000
-
-HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
-    CMD wget -qO- http://127.0.0.1:8000/healthz >/dev/null || exit 1
-
-ENTRYPOINT ["/usr/local/bin/grok2api-entrypoint"]
-CMD ["/app/grok2api", "--config", "/app/config.yaml", "--listen", "0.0.0.0:8000"]
+CMD ["/app/grok2api"]
