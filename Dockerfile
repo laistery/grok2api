@@ -1,27 +1,24 @@
-# 前端构建
-FROM node:20-alpine AS fe
+# 前端构建 使用高版本Node适配pnpm
+FROM node:22-alpine AS fe
 WORKDIR /app
 COPY . .
 WORKDIR /app/frontend
-RUN corepack enable pnpm && corepack use pnpm@latest
+# 固定安装兼容低Node的旧版pnpm，不自动拉最新
+RUN npm install -g pnpm@9
 RUN pnpm install --frozen-lockfile
 RUN pnpm run build
 
 # 后端编译
 FROM golang:1.22-alpine AS be
 WORKDIR /app
-# 一次性拷贝全部项目源码
 COPY . .
-# 写入国内代理加速
 RUN go env -w GOPROXY=https://goproxy.cn,direct
-# 自动生成依赖文件并下载
 RUN go mod tidy
-# 把编译好的前端静态文件复制进来
+# 合并前端打包产物
 COPY --from=fe /app/frontend/dist /app/frontend/dist
-# 编译程序
 RUN CGO_ENABLED=0 GOOS=linux go build -o grok2api ./cmd/main.go
 
-# 运行镜像
+# 运行容器
 FROM alpine:3.19
 WORKDIR /app
 RUN apk add --no-cache ca-certificates tzdata
