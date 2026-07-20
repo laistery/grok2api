@@ -1,36 +1,18 @@
-# 前端构建
-FROM node:20-alpine AS frontend-builder
-WORKDIR /src/frontend
+FROM golang:1.21-alpine
 
-RUN corepack enable pnpm && corepack use pnpm@latest
-
-COPY frontend/package*.json ./
-RUN pnpm install --frozen-lockfile
-
-COPY frontend/ .
-RUN pnpm run build
-
-# 后端编译
-FROM golang:1.22-alpine AS backend-builder
-WORKDIR /src
-
-ENV CGO_ENABLED=0
-ENV GOOS=linux
-
-COPY go.mod go.sum ./
-RUN go mod download
-
-COPY . .
-COPY --from=frontend-builder /src/frontend/dist ./frontend/dist
-
-RUN go build -o grok2api ./cmd/main.go
-
-# 运行镜像
-FROM alpine:3.19
 WORKDIR /app
 
-RUN apk add --no-cache ca-certificates tzdata
-COPY --from=backend-builder /src/grok2api /app/grok2api
+# 安装基础依赖
+RUN apk update && apk add --no-cache git ca-certificates tzdata
 
+# 直接拉取源码
+RUN git clone https://github.com/chenyme/grok2api.git .
+
+# 下载依赖+编译
+RUN go mod tidy && go build -o grok2api ./cmd/main.go
+
+# 暴露端口
 EXPOSE 8000
+
+# 启动命令
 CMD ["/app/grok2api"]
